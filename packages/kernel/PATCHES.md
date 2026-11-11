@@ -118,6 +118,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: https://github.com/armada-os/armada/issues/327
   upstream: unknown
   notes: Adds support for Visionox VTDR6130 panel revisions found in the Retroid Pocket Flip 2, derived from the affected device's live Android device tree. Reuses the Pocket 6 initialization sequence and DSC configuration with the Flip 2 regulator supplies.
+- `patches/0104b-drm-panel-vtdr6130-add-odin2portal-experiment.patch`
+  source: https://github.com/armada-os/armada/issues/845
+  upstream: experimental; 60/120 Hz hardware-tested on the affected unit
+  notes: Adds an opt-in Odin 2 Portal VTDR6130 descriptor based on its live Android device tree. Advertises preferred 60 Hz and optional 120 Hz with mode-specific vendor commands and a lower startup brightness, retains the Portal's existing GPIO-controlled power rails, and leaves the default ICNA3512 device tree unchanged. The forced-long-write helper accepts MSM's padded packet byte count. Build the separate qcs8550-ayn-odin2portal-vtdr6130 DTB; it is deliberately absent from the default supported-dtbs boot list. A source-only local update recipe is in experiments/odin2portal-vtdr6130/README.md.
 - `patches/0064_Mangmi-Air-Y-Pro-panel.patch`
   source: https://github.com/ROCKNIX/distribution/blob/807c74fc46c124891d8aa9b57a68533d38e9a6b2/projects/ROCKNIX/devices/SM8250/patches/linux/0064_Mangmi-Air-Y-Pro-panel.patch
   upstream: unknown

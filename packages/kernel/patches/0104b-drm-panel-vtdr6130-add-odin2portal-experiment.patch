@@ -1,0 +1,319 @@
+diff --git a/drivers/gpu/drm/panel/panel-visionox-vtdr6130-cog.c b/drivers/gpu/drm/panel/panel-visionox-vtdr6130-cog.c
+index 0a5fc74..4233bc5 100644
+--- a/drivers/gpu/drm/panel/panel-visionox-vtdr6130-cog.c
++++ b/drivers/gpu/drm/panel/panel-visionox-vtdr6130-cog.c
+@@ -51,6 +51,16 @@ struct panel_desc {
+ 
+ 	const struct regulator_bulk_data *supplies;
+ 	unsigned int num_supplies;
++	const struct vtdr6130_supply_config *supply_config;
++	unsigned int default_brightness;
++	unsigned int max_brightness;
++	bool off_in_lpm;
++};
++
++struct vtdr6130_supply_config {
++	int voltage_uv;
++	int load_ua;
++	unsigned int delay_ms;
+ };
+ 
+ /* SM8250 regulators */
+@@ -289,6 +299,230 @@ static struct panel_desc vtdr6130_sm8250_desc = {
+ 	.num_supplies = ARRAY_SIZE(sm8250_panel_supplies),
+ };
+ 
++static void vtdr6130_o2p_write(struct mipi_dsi_multi_context *ctx,
++			       const u8 *data, size_t len)
++{
++	struct mipi_dsi_device *dsi = ctx->dsi;
++	const struct mipi_dsi_host_ops *ops = dsi->host->ops;
++	struct mipi_dsi_msg msg = {
++		.channel = dsi->channel,
++		.type = MIPI_DSI_DCS_LONG_WRITE,
++		.flags = MIPI_DSI_MSG_USE_LPM,
++		.tx_len = len,
++		.tx_buf = data,
++	};
++	ssize_t ret;
++
++	if (ctx->accum_err)
++		return;
++
++	if (!ops || !ops->transfer) {
++		ctx->accum_err = -EOPNOTSUPP;
++		return;
++	}
++
++	ret = ops->transfer(dsi->host, &msg);
++	/* MSM reports the padded packet size, including its header. */
++	if (ret < (ssize_t)len) {
++		ctx->accum_err = ret < 0 ? ret : -EIO;
++		dev_err(&dsi->dev,
++			"Command %#x failed: %d (transfer %zd, payload %zu)\n",
++			data[0], ctx->accum_err, ret, len);
++	}
++}
++
++#define vtdr6130_o2p_write_seq(ctx, seq...) do { \
++	static const u8 data[] = { seq }; \
++	vtdr6130_o2p_write(ctx, data, ARRAY_SIZE(data)); \
++} while (0)
++
++static int vtdr6130_o2p_init_sequence(struct panel_info *pinfo)
++{
++	struct mipi_dsi_multi_context ctx = { .dsi = pinfo->dsi };
++	struct drm_dsc_picture_parameter_set pps;
++	int cur_mode = vtdr6130_get_current_mode(pinfo);
++	int vrefresh = drm_mode_vrefresh(&pinfo->desc->modes[cur_mode]);
++
++	pinfo->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++
++	vtdr6130_o2p_write_seq(&ctx, 0x03, 0x01);
++	vtdr6130_o2p_write_seq(&ctx, 0x35, 0x00);
++	vtdr6130_o2p_write_seq(&ctx, 0x53, 0x20);
++	vtdr6130_o2p_write_seq(&ctx, 0x51, 0x04, 0x00);
++	vtdr6130_o2p_write_seq(&ctx, 0x59, 0x09);
++	if (vrefresh == 120)
++		vtdr6130_o2p_write_seq(&ctx, 0x6c, 0x00);
++	else
++		vtdr6130_o2p_write_seq(&ctx, 0x6c, 0x01);
++	vtdr6130_o2p_write_seq(&ctx, 0x6f, 0x02);
++	vtdr6130_o2p_write_seq(&ctx,
++			       0x70, 0x11, 0x00, 0x00, 0x89, 0x30, 0x80, 0x07,
++			       0x80, 0x04, 0x38, 0x00, 0x08, 0x02, 0x1c, 0x02,
++			       0x1c, 0x02, 0x00, 0x02, 0x0e, 0x00, 0x20, 0x00,
++			       0xbb, 0x00, 0x07, 0x00, 0x0c, 0x0d, 0xb7, 0x0c,
++			       0xb7, 0x18, 0x00, 0x10, 0xf0, 0x03, 0x0c, 0x20,
++			       0x00, 0x06, 0x0b, 0x0b, 0x33, 0x0e, 0x1c, 0x2a,
++			       0x38, 0x46, 0x54, 0x62, 0x69, 0x70, 0x77, 0x79,
++			       0x7b, 0x7d, 0x7e, 0x01, 0x02, 0x01, 0x00, 0x09,
++			       0x40, 0x09, 0xbe, 0x19, 0xfc, 0x19, 0xfa, 0x19,
++			       0xf8, 0x1a, 0x38, 0x1a, 0x78, 0x1a, 0xb6, 0x2a,
++			       0xb6, 0x2a, 0xf4, 0x2a, 0xf4, 0x4b, 0x34, 0x63,
++			       0x74, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00);
++	vtdr6130_o2p_write_seq(&ctx, 0x72, 0x00);
++	vtdr6130_o2p_write_seq(&ctx, 0xf0, 0xaa, 0x10);
++	if (vrefresh == 120) {
++		vtdr6130_o2p_write_seq(&ctx, 0x65, 0x04);
++		vtdr6130_o2p_write_seq(&ctx, 0xb1, 0x00, 0x12);
++	} else {
++		vtdr6130_o2p_write_seq(&ctx, 0x65, 0x0b);
++		vtdr6130_o2p_write_seq(&ctx, 0xb1, 0x07, 0xb6);
++	}
++	vtdr6130_o2p_write_seq(&ctx, 0xff, 0x5a, 0x80);
++	vtdr6130_o2p_write_seq(&ctx, 0x65, 0x0a);
++	vtdr6130_o2p_write_seq(&ctx, 0xf9, 0xa8);
++	vtdr6130_o2p_write_seq(&ctx, 0xff, 0x5a, 0x81);
++	vtdr6130_o2p_write_seq(&ctx, 0x65, 0x06);
++	vtdr6130_o2p_write_seq(&ctx, 0xf3, 0x87);
++	vtdr6130_o2p_write_seq(&ctx, 0x65, 0x09);
++	vtdr6130_o2p_write_seq(&ctx, 0xf3, 0x00);
++	vtdr6130_o2p_write_seq(&ctx, 0x65, 0x0a);
++	vtdr6130_o2p_write_seq(&ctx, 0xf3, 0x10);
++	vtdr6130_o2p_write_seq(&ctx, 0x65, 0x10);
++	vtdr6130_o2p_write_seq(&ctx, 0xf3, 0x10);
++	vtdr6130_o2p_write_seq(&ctx, 0xf0, 0xaa, 0x00);
++	vtdr6130_o2p_write_seq(&ctx, 0xff, 0x5a, 0x00);
++	mipi_dsi_dcs_exit_sleep_mode_multi(&ctx);
++	mipi_dsi_msleep(&ctx, 120);
++	mipi_dsi_dcs_set_display_on_multi(&ctx);
++	mipi_dsi_msleep(&ctx, 20);
++
++	drm_dsc_pps_payload_pack(&pps, &pinfo->desc->dsc);
++	mipi_dsi_picture_parameter_set_multi(&ctx, &pps);
++
++	return ctx.accum_err;
++}
++
++static const struct drm_display_mode vtdr6130_o2p_modes[] = {
++	{
++		.clock = (1080 + 44 + 10 + 100) * (1920 + 1974 + 4 + 14) * 60 / 1000,
++		.hdisplay = 1080,
++		.hsync_start = 1080 + 44,
++		.hsync_end = 1080 + 44 + 10,
++		.htotal = 1080 + 44 + 10 + 100,
++		.vdisplay = 1920,
++		.vsync_start = 1920 + 1974,
++		.vsync_end = 1920 + 1974 + 4,
++		.vtotal = 1920 + 1974 + 4 + 14,
++	},
++	{
++		.clock = (1080 + 44 + 10 + 100) * (1920 + 18 + 4 + 14) * 120 / 1000,
++		.hdisplay = 1080,
++		.hsync_start = 1080 + 44,
++		.hsync_end = 1080 + 44 + 10,
++		.htotal = 1080 + 44 + 10 + 100,
++		.vdisplay = 1920,
++		.vsync_start = 1920 + 18,
++		.vsync_end = 1920 + 18 + 4,
++		.vtotal = 1920 + 18 + 4 + 14,
++	},
++};
++
++static const struct regulator_bulk_data o2p_panel_supplies[] = {
++	{ .supply = "vddio" },
++	{ .supply = "vdd" },
++	{ .supply = "vci" },
++	{ .supply = "blvdd" },
++};
++
++static const struct vtdr6130_supply_config o2p_supply_config[] = {
++	{ 1800000, 200000, 20 },
++	{ 2800000, 299000, 0 },
++	{ 3000000, 10000, 0 },
++	{ 5000000, 0, 0 },
++};
++
++static struct panel_desc vtdr6130_o2p_desc = {
++	.modes = vtdr6130_o2p_modes,
++	.num_modes = ARRAY_SIZE(vtdr6130_o2p_modes),
++	.bpc = 8,
++	.lanes = 4,
++	.format = MIPI_DSI_FMT_RGB888,
++	.mode_flags = MIPI_DSI_MODE_NO_EOT_PACKET |
++		      MIPI_DSI_CLOCK_NON_CONTINUOUS | MIPI_DSI_MODE_LPM,
++	.init_sequence = vtdr6130_o2p_init_sequence,
++	.dsc = {
++		.dsc_version_major = 1,
++		.dsc_version_minor = 1,
++		.slice_height = 12,
++		.slice_width = 540,
++		.slice_count = 2,
++		.bits_per_component = 8,
++		.bits_per_pixel = 8 << 4,
++		.block_pred_enable = true,
++	},
++	.supplies = o2p_panel_supplies,
++	.num_supplies = ARRAY_SIZE(o2p_panel_supplies),
++	.supply_config = o2p_supply_config,
++	.default_brightness = 1024,
++	.max_brightness = 3413,
++	.off_in_lpm = true,
++};
++
++static int vtdr6130_power_off(struct panel_info *pinfo, unsigned int count)
++{
++	int ret, error = 0;
++
++	if (!pinfo->desc->supply_config)
++		return regulator_bulk_disable(count, pinfo->supplies);
++
++	while (count--) {
++		ret = regulator_disable(pinfo->supplies[count].consumer);
++		if (ret) {
++			dev_err(&pinfo->dsi->dev, "Failed to disable %s: %d\n",
++				pinfo->supplies[count].supply, ret);
++			if (!error)
++				error = ret;
++		}
++	}
++
++	return error;
++}
++
++static int vtdr6130_power_on(struct panel_info *pinfo)
++{
++	const struct vtdr6130_supply_config *config = pinfo->desc->supply_config;
++	unsigned int i;
++	int ret;
++
++	if (!config)
++		return regulator_bulk_enable(pinfo->desc->num_supplies, pinfo->supplies);
++
++	for (i = 0; i < pinfo->desc->num_supplies; i++) {
++		struct regulator *regulator = pinfo->supplies[i].consumer;
++
++		ret = regulator_set_voltage(regulator, config[i].voltage_uv,
++					    config[i].voltage_uv);
++		if (ret)
++			goto error;
++		ret = regulator_set_load(regulator, config[i].load_ua);
++		if (ret)
++			goto error;
++		ret = regulator_enable(regulator);
++		if (ret)
++			goto error;
++		if (config[i].delay_ms)
++			msleep(config[i].delay_ms);
++	}
++
++	return 0;
++
++error:
++	dev_err(&pinfo->dsi->dev, "Failed to enable %s: %d\n",
++		pinfo->supplies[i].supply, ret);
++	vtdr6130_power_off(pinfo, i);
++	return ret;
++}
++
+ static void vtdr6130_reset(struct panel_info *pinfo)
+ {
+ 	gpiod_set_value_cansleep(pinfo->reset_gpio, 0);
+@@ -304,7 +538,7 @@ static int vtdr6130_prepare(struct drm_panel *panel)
+ 	struct panel_info *pinfo = to_panel_info(panel);
+ 	int ret;
+ 
+-	ret = regulator_bulk_enable(pinfo->desc->num_supplies, pinfo->supplies);
++	ret = vtdr6130_power_on(pinfo);
+ 	if (ret < 0) {
+ 		dev_err(panel->dev, "failed to enable regulators: %d\n", ret);
+ 		return ret;
+@@ -314,7 +548,7 @@ static int vtdr6130_prepare(struct drm_panel *panel)
+ 
+ 	ret = pinfo->desc->init_sequence(pinfo);
+ 	if (ret < 0) {
+-		regulator_bulk_disable(pinfo->desc->num_supplies, pinfo->supplies);
++		vtdr6130_power_off(pinfo, pinfo->desc->num_supplies);
+ 		dev_err(panel->dev, "failed to initialize panel: %d\n", ret);
+ 		return ret;
+ 	}
+@@ -327,10 +561,13 @@ static int vtdr6130_disable(struct drm_panel *panel)
+ 	struct panel_info *pinfo = to_panel_info(panel);
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = pinfo->dsi };
+ 
+-	pinfo->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
++	if (pinfo->desc->off_in_lpm)
++		pinfo->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++	else
++		pinfo->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+ 
+ 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
+-	mipi_dsi_msleep(&dsi_ctx, 50);
++	mipi_dsi_msleep(&dsi_ctx, pinfo->desc->off_in_lpm ? 20 : 50);
+ 	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
+ 	mipi_dsi_msleep(&dsi_ctx, 120);
+ 
+@@ -342,9 +579,7 @@ static int vtdr6130_unprepare(struct drm_panel *panel)
+ 	struct panel_info *pinfo = to_panel_info(panel);
+ 
+ 	gpiod_set_value_cansleep(pinfo->reset_gpio, 1);
+-	regulator_bulk_disable(pinfo->desc->num_supplies, pinfo->supplies);
+-
+-	return 0;
++	return vtdr6130_power_off(pinfo, pinfo->desc->num_supplies);
+ }
+ 
+ static void vtdr6130_remove(struct mipi_dsi_device *dsi)
+@@ -449,10 +684,11 @@ static const struct backlight_ops vtdr6130_bl_ops = {
+ static struct backlight_device *vtdr6130_create_backlight(struct mipi_dsi_device *dsi)
+ {
+ 	struct device *dev = &dsi->dev;
++	struct panel_info *pinfo = mipi_dsi_get_drvdata(dsi);
+ 	const struct backlight_properties props = {
+ 		.type = BACKLIGHT_RAW,
+-		.brightness = 4095,
+-		.max_brightness = 4095,
++		.brightness = pinfo->desc->default_brightness ?: 4095,
++		.max_brightness = pinfo->desc->max_brightness ?: 4095,
+ 	};
+ 
+ 	return devm_backlight_device_register(dev, dev_name(dev), dev, dsi,
+@@ -518,6 +754,7 @@ static int vtdr6130_probe(struct mipi_dsi_device *dsi)
+ }
+ 
+ static const struct of_device_id vtdr6130_of_match[] = {
++	{ .compatible = "vtdr6130,o2p", .data = &vtdr6130_o2p_desc },
+ 	{ .compatible = "vtdr6130,rp6", .data = &vtdr6130_rp6_desc },
+ 	{ .compatible = "vtdr6130,rp5", .data = &vtdr6130_sm8250_desc },
+ 	{ .compatible = "vtdr6130,rpflip2", .data = &vtdr6130_sm8250_desc },

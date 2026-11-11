@@ -1,0 +1,10 @@
+FROM ghcr.io/armada-os/armada@sha256:f1be3089bb7c917adf41068704ce8dd9a679e3c47cab466b3d2832be1b2f0cde
+
+LABEL org.opencontainers.image.version="20261010.o2p-vtdr120-source1"
+LABEL org.opencontainers.image.description="Experimental Odin 2 Portal VTDR6130: preferred 60 Hz and optional 120 Hz"
+
+RUN --mount=type=bind,source=_build/kernel,target=/packages/kernel,ro \
+    --mount=type=bind,source=install-kernel.sh,target=/run/install-o2p-kernel.sh,ro \
+    bash /run/install-o2p-kernel.sh
+
+RUN bootc container lint
